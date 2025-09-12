@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package slave;
+
+service SlaveService {
+  rpc UploadBlock(stream UploadBlockRequest) returns (UploadBlockResponse) {}
+}
+
+message UploadBlockRequest {
+  oneof content {
+    BlockMetadata metadata = 1;
+    DataChunk chunk = 2;
+  }
+}
+
+
+// TODO: add block metadata
+message BlockMetadata {}
+
+message DataChunk {
+  bytes data = 1;
+  // SHA2-256 checksum of the data
+  bytes checksum = 2;
+}
+
+message UploadBlockResponse {
+  bool success = 1;
+}

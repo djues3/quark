@@ -1,0 +1,15 @@
+[package]
+name = "rustydfs-core"
+version = "0.1.0"
+edition = "2024"
+
+
+
+[dependencies]
+tokio = { version = "1.47.1", features = ["full"] }
+tonic = "0.14.2"
+prost = "0.14"
+tonic-prost = "*"
+
+[build-dependencies]
+tonic-prost-build = "*"
