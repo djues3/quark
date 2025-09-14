@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use rustydfs_core::proto::greeter_server::GreeterServer;
+use opendal::Operator;
+use rustydfs_core::proto::{
+    greeter_server::GreeterServer, slave_service_server::SlaveServiceServer,
+};
+use rustydfs_slave::*;
 use tonic::transport::Server;
 use tracing::info;
 
-mod hello;
-mod slave;
 /// Slave for RustyDFS
 #[derive(Parser)]
 struct Args {
@@ -26,16 +28,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     let addr = "[::1]:8080".parse()?;
     let greeter = hello::MyGreeter::new(Arc::new(config));
+    let builder = opendal::services::Fs::default().root("/tmp/rdfs-slave/slave1");
+    let operator = Operator::new(builder)?.finish();
+
+    let slave = slave::SlaveService { fs: operator };
 
     info!("GreeterServer listening on {}", addr);
 
-    let server = Server::builder().add_service(GreeterServer::new(greeter));
+    let server = Server::builder()
+        .add_service(GreeterServer::new(greeter))
+        .add_service(SlaveServiceServer::new(slave));
     server.serve(addr).await?;
 
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct ServerConfig {
-    delay: bool,
 }

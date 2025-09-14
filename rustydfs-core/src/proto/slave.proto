@@ -15,7 +15,9 @@ message UploadBlockRequest {
 
 
 // TODO: add block metadata
-message BlockMetadata {}
+message BlockMetadata {
+  bytes block_id = 1;
+}
 
 message DataChunk {
   bytes data = 1;
@@ -24,5 +26,6 @@ message DataChunk {
 }
 
 message UploadBlockResponse {
-  bool success = 1;
+  bytes block_id = 1;
+  uint64 size = 2; 
 }

@@ -8,7 +8,7 @@ use tracing::{Level, info, instrument, span};
 use crate::ServerConfig;
 
 #[derive(Debug, Clone)]
-pub(crate) struct MyGreeter {
+pub struct MyGreeter {
     pub(crate) config: Arc<ServerConfig>,
 }
 
