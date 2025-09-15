@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use clap::Parser;
 use opendal::Operator;
-use rustydfs_core::proto::{
+use quark_core::proto::{
     greeter_server::GreeterServer, slave_service_server::SlaveServiceServer,
 };
-use rustydfs_slave::*;
+use quark_slave::*;
 use tonic::transport::Server;
 use tracing::info;
 

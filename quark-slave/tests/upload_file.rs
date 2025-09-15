@@ -1,7 +1,7 @@
-use rustydfs_core::proto::slave_service_client::SlaveServiceClient;
-use rustydfs_core::proto::upload_block_request::Content;
-use rustydfs_core::proto::{self, UploadBlockRequest};
-use rustydfs_slave::slave::SlaveService;
+use quark_core::proto::slave_service_client::SlaveServiceClient;
+use quark_core::proto::upload_block_request::Content;
+use quark_core::proto::{self, UploadBlockRequest};
+use quark_slave::slave::SlaveService;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tempfile::TempDir;

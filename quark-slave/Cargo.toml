@@ -1,10 +1,10 @@
 [package]
-name = "rustydfs-slave"
+name = "quark-slave"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rustydfs-core = { version = "*", path = "../rustydfs-core" }
+quark-core = { version = "*", path = "../quark-core" }
 tokio = { version = "1.47.1", features = ["full"] }
 tonic = { version = "0.14.2" }
 prost = "0.14"

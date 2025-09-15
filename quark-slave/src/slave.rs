@@ -1,4 +1,4 @@
-use rustydfs_core::proto::{self, UploadBlockResponse};
+use quark_core::proto::{self, UploadBlockResponse};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio_stream::StreamExt;

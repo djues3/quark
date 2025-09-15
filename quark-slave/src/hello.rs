@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use rand::Rng;
-use rustydfs_core::proto;
+use quark_core::proto;
 use tonic::{Request, Response};
 use tracing::{Level, info, instrument, span};
 
