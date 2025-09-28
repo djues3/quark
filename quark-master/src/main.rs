@@ -11,26 +11,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .init();
 
     let mut fs = FileSystem::default();
-    let s = String::from("/abcd/");
-    fs.create_directory(s).await?;
-    let s = String::from("/abcd/a/");
-    fs.create_directory(s).await?;
-    let s = String::from("/abcd/b/");
-    fs.create_directory(s).await?;
-    fs.create_file(String::from("/abcd.exe")).await?;
+    fs.create_directory("/abcd/").await?;
+    fs.create_directory("/abcd/a/").await?;
+    fs.create_directory("/abcd/b/").await?;
+    fs.create_file("/abcd.exe").await?;
 
     println!("\n\n\n\nTesting failure case");
-    let s = String::from("/abcd.exe/b/ec/");
-    let res = fs.create_directory(s).await;
+    let res = fs.create_directory("/abcd.exe/b/ec/").await;
     println!("{:?}", res.unwrap_err());
     //println!("{res:?}");
     println!("\n\n\n\n\n\n");
-    let s = String::from("/abcd.exe/b.exe");
-    let res = fs.create_file(s).await;
+    let res = fs.create_file("/abcd.exe/b.exe").await;
     println!("{res:?}");
     println!("\n\n\n\n\n\n");
     println!("Searching for inode");
-    let inode = fs.get_inode("/abcd.exe".into()).await?;
+    let inode = fs.get_inode("/abcd.exe").await?;
     println!("{inode:#?}");
+    println!("\n\n\n\n\n\n");
+    fs.create_file("/a").await?;
+    fs.create_file("/bin").await?;
+    fs.create_file("/boiot").await?;
+    fs.create_file("/etc").await?;
+    fs.create_file("/e").await?;
+    let res = fs.list_directory("/").await?;
+    println!("{res:#?}");
+
     Ok(())
 }
