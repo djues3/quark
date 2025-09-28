@@ -14,7 +14,6 @@ message UploadBlockRequest {
 }
 
 
-// TODO: add block metadata
 message BlockMetadata {
   bytes block_id = 1;
 }

@@ -1,6 +1,3 @@
-
 [workspace]
 resolver = "2"
-members = [
-  "quark-core"
-, "quark-slave"]
+members = ["quark-core", "quark-master", "quark-slave"]
