@@ -17,6 +17,21 @@ pub struct FileSystem {
     pub root_id: INodeId,
 }
 
+#[derive(Debug, Clone)]
+pub struct DirectoryEntry {
+    pub name: String,
+    pub id: INodeId,
+    pub created_at: SystemTime,
+    pub modified_at: SystemTime,
+    pub entry_type: EntryType,
+}
+
+#[derive(Debug, Clone)]
+pub enum EntryType {
+    File { block_count: usize },
+    Directory { child_count: usize },
+}
+
 pub enum FsOp {
     CreateDirectory { path: String },
     CreateFile { path: String },
@@ -57,12 +72,12 @@ pub enum INodeKind {
 }
 
 impl INode {
-    /// Creates a new INode with the specified id, parent and specied file / directory data.
+    /// Creates a new INode with the specified id, parent and specified file / directory data.
     pub fn new(name: String, id: Uuid, parent_id: Uuid, kind: INodeKind) -> Self {
         let now = SystemTime::now();
         Self {
-            id: crate::INodeId(id),
-            parent: crate::INodeId(parent_id),
+            id: INodeId(id),
+            parent: INodeId(parent_id),
             name,
             created_at: now,
             modified_at: now,
@@ -121,10 +136,16 @@ impl FileSystem {
             root_id,
         }
     }
+    /// Creates a new directory at the specified path.
+    /// The path must end with a `/`
+    /// The creation will fail if any part of the path doesn't exist.
     pub async fn create_directory(&mut self, path: String) -> Result<()> {
         self.create_inode(path, CreateType::Directory).await
     }
 
+    /// Creates a new file at the specified path.
+    /// The path must not end with a `/`
+    /// The creation will fail if the parent directory doesn't exist
     pub async fn create_file(&mut self, path: String) -> Result<()> {
         self.create_inode(path, CreateType::File).await
     }
@@ -148,9 +169,9 @@ impl FileSystem {
         let parent = path_obj.parent().ok_or(FileError::RootForbidden)?;
         let name = path_obj
             .file_name()
-            .ok_or(FileError::FileNotFound)?
+            .ok_or(FileError::NotFound)?
             .to_str()
-            .ok_or(FileError::FileNotFound)?
+            .ok_or(FileError::NotFound)?
             .to_string();
 
         let parent_id = self.walk_inode_tree(parent).await?;
@@ -188,22 +209,63 @@ impl FileSystem {
         Ok(inode.clone())
     }
 
+    /// Returns a `ls` of the specified directory
+    pub async fn list_directory(&self, path: String) -> Result<Vec<DirectoryEntry>> {
+        debug!(path = ?path, "Listing directory");
+        let path = Path::new(&path);
+        let inode_id = self.walk_inode_tree(path).await?;
+        let guard = self.namespace.read().await;
+        let inode = guard.get(&inode_id).ok_or(FileError::PossibleCorruption)?;
+        match &inode.kind {
+            INodeKind::File { .. } => Err(FileError::DirectoryError),
+            INodeKind::Directory { children } => {
+                let mut entries = children
+                    .iter()
+                    .map(|(name, &child_id)| {
+                        guard
+                            .get(&child_id)
+                            .ok_or(FileError::PossibleCorruption)
+                            .map(|inode| DirectoryEntry::from_inode(name.clone(), inode))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                entries.sort_unstable_by(|a, b| {
+                    use std::cmp::Ordering;
+                    match (&a.entry_type, &b.entry_type) {
+                        (EntryType::File { .. }, EntryType::Directory { .. }) => Ordering::Greater,
+                        (EntryType::Directory { .. }, EntryType::File { .. }) => Ordering::Less,
+                        _ => {
+                            let case_insensitive =
+                                a.name.to_lowercase().cmp(&b.name.to_lowercase());
+
+                            if case_insensitive == Ordering::Equal {
+                                // we want lowercase before uppercase, UTF-8 doesn't agree
+                                a.name.cmp(&b.name).reverse()
+                            } else {
+                                case_insensitive
+                            }
+                        }
+                    }
+                });
+                Ok(entries)
+            }
+        }
+    }
+
     /// Find the id of the INode for the given path
     async fn walk_inode_tree(&self, path: &Path) -> Result<INodeId> {
         debug!("Started walking inode tree");
         let guard = self.namespace.read().await;
         let mut current = guard.get(&self.root_id).ok_or(TraversalError::RootError)?;
         trace!("Got root");
-        info!("{:?}", path.components());
         for component in path.components().skip(1) {
             let name = component.as_os_str().to_str().ok_or(TraversalError::Utf8)?;
             trace!(component = ?name);
             current = match &current.kind {
                 INodeKind::Directory { children } => {
-                    let child_id = children.get(name).ok_or(FileError::FileNotFound)?;
+                    let child_id = children.get(name).ok_or(FileError::NotFound)?;
                     trace!(?child_id, "Found child");
 
-                    guard.get(child_id).ok_or(FileError::FileNotFound)?
+                    guard.get(child_id).ok_or(FileError::NotFound)?
                 }
                 INodeKind::File { .. } => {
                     debug!("Tried to traverse into a file");
@@ -230,7 +292,7 @@ pub enum FileError {
     #[error("File as parent")]
     FileAsParent,
     #[error("File not found")]
-    FileNotFound,
+    NotFound,
     #[error("File system probably corrupted, file was directory now is file")]
     PossibleCorruption,
     #[error("Error while traversing file system: {0}")]
@@ -252,6 +314,25 @@ pub enum TraversalError {
 enum CreateType {
     Directory,
     File,
+}
+
+impl DirectoryEntry {
+    fn from_inode(name: String, inode: &INode) -> Self {
+        Self {
+            name,
+            id: inode.id,
+            created_at: inode.created_at,
+            modified_at: inode.modified_at,
+            entry_type: match &inode.kind {
+                INodeKind::File { blocks } => EntryType::File {
+                    block_count: blocks.len(),
+                },
+                INodeKind::Directory { children } => EntryType::Directory {
+                    child_count: children.len(),
+                },
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -279,7 +360,7 @@ mod tests {
 
         let result = fs.get_inode("/nonexistent".to_string()).await;
 
-        assert!(matches!(result.unwrap_err(), FileError::FileNotFound));
+        assert!(matches!(result.unwrap_err(), FileError::NotFound));
     }
 
     #[tokio::test]
@@ -458,5 +539,435 @@ mod tests {
 
         assert_eq!(tmp_dir.name, "tmp");
         assert_eq!(config_file.name, "config");
+    }
+
+    #[tokio::test]
+    async fn test_list_directory_with_mixed_content() {
+        let mut fs = FileSystem::default();
+
+        // Create a directory with files and subdirectories
+        fs.create_directory("/projects/".to_string()).await.unwrap();
+        fs.create_file("/projects/readme.txt".to_string())
+            .await
+            .unwrap();
+        fs.create_file("/projects/config.json".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/projects/src/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/projects/docs/".to_string())
+            .await
+            .unwrap();
+
+        // Add some content to subdirectories to test child_count
+        fs.create_file("/projects/src/main.rs".to_string())
+            .await
+            .unwrap();
+        fs.create_file("/projects/src/lib.rs".to_string())
+            .await
+            .unwrap();
+
+        // List the directory
+        let entries = fs.list_directory("/projects/".to_string()).await.unwrap();
+
+        // Should have 4 entries
+        assert_eq!(entries.len(), 4);
+
+        // Convert to a map for easier testing
+        let entry_map: std::collections::HashMap<String, &DirectoryEntry> =
+            entries.iter().map(|e| (e.name.clone(), e)).collect();
+
+        // Verify files
+        let readme = entry_map.get("readme.txt").unwrap();
+        assert_eq!(readme.name, "readme.txt");
+        assert!(matches!(
+            readme.entry_type,
+            EntryType::File { block_count: 0 }
+        ));
+
+        let config = entry_map.get("config.json").unwrap();
+        assert_eq!(config.name, "config.json");
+        assert!(matches!(
+            config.entry_type,
+            EntryType::File { block_count: 0 }
+        ));
+
+        // Verify directories
+        let src_dir = entry_map.get("src").unwrap();
+        assert_eq!(src_dir.name, "src");
+        assert!(matches!(
+            src_dir.entry_type,
+            EntryType::Directory { child_count: 2 }
+        ));
+
+        let docs_dir = entry_map.get("docs").unwrap();
+        assert_eq!(docs_dir.name, "docs");
+        assert!(matches!(
+            docs_dir.entry_type,
+            EntryType::Directory { child_count: 0 }
+        ));
+
+        // Verify all entries have valid IDs and timestamps
+        for entry in &entries {
+            assert_ne!(entry.id.0, uuid::Uuid::nil());
+            assert!(entry.created_at <= SystemTime::now());
+            assert!(entry.modified_at <= SystemTime::now());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_empty_directory() {
+        let mut fs = FileSystem::default();
+        fs.create_directory("/empty/".to_string()).await.unwrap();
+
+        let entries = fs.list_directory("/empty/".to_string()).await.unwrap();
+        assert_eq!(entries.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_root_directory() {
+        let mut fs = FileSystem::default();
+
+        // Add some items to root
+        fs.create_directory("/home/".to_string()).await.unwrap();
+        fs.create_directory("/etc/".to_string()).await.unwrap();
+        fs.create_file("/boot.cfg".to_string()).await.unwrap();
+
+        let entries = fs.list_directory("/".to_string()).await.unwrap();
+        assert_eq!(entries.len(), 3);
+
+        let names: std::collections::HashSet<String> =
+            entries.iter().map(|e| e.name.clone()).collect();
+
+        assert!(names.contains("home"));
+        assert!(names.contains("etc"));
+        assert!(names.contains("boot.cfg"));
+    }
+
+    #[tokio::test]
+    async fn test_list_directory_error_on_file() {
+        let mut fs = FileSystem::default();
+        fs.create_file("/not_a_directory.txt".to_string())
+            .await
+            .unwrap();
+
+        let result = fs.list_directory("/not_a_directory.txt".to_string()).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FileError::DirectoryError));
+    }
+
+    #[tokio::test]
+    async fn test_list_nonexistent_directory() {
+        let fs = FileSystem::default();
+
+        let result = fs.list_directory("/does_not_exist/".to_string()).await;
+        assert!(result.is_err());
+        // Should fail during path traversal
+    }
+
+    #[tokio::test]
+    async fn test_list_directory_entry_types_are_correct() {
+        let mut fs = FileSystem::default();
+
+        // Create nested structure to verify child counts
+        fs.create_directory("/test/".to_string()).await.unwrap();
+        fs.create_directory("/test/subdir1/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/test/subdir2/".to_string())
+            .await
+            .unwrap();
+        fs.create_file("/test/file1.txt".to_string()).await.unwrap();
+
+        // Add files to subdir1
+        fs.create_file("/test/subdir1/nested1.txt".to_string())
+            .await
+            .unwrap();
+        fs.create_file("/test/subdir1/nested2.txt".to_string())
+            .await
+            .unwrap();
+        fs.create_file("/test/subdir1/nested3.txt".to_string())
+            .await
+            .unwrap();
+
+        let entries = fs.list_directory("/test/".to_string()).await.unwrap();
+
+        for entry in &entries {
+            match &entry.name[..] {
+                "subdir1" => {
+                    assert!(matches!(
+                        entry.entry_type,
+                        EntryType::Directory { child_count: 3 }
+                    ));
+                }
+                "subdir2" => {
+                    assert!(matches!(
+                        entry.entry_type,
+                        EntryType::Directory { child_count: 0 }
+                    ));
+                }
+                "file1.txt" => {
+                    assert!(matches!(
+                        entry.entry_type,
+                        EntryType::File { block_count: 0 }
+                    ));
+                }
+                _ => panic!("Unexpected entry: {}", entry.name),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_directory_preserves_timestamps() {
+        let mut fs = FileSystem::default();
+
+        let before_creation = SystemTime::now();
+        fs.create_directory("/timestamped/".to_string())
+            .await
+            .unwrap();
+        fs.create_file("/timestamped/file.txt".to_string())
+            .await
+            .unwrap();
+        let after_creation = SystemTime::now();
+
+        let entries = fs
+            .list_directory("/timestamped/".to_string())
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+
+        let file_entry = &entries[0];
+        assert!(file_entry.created_at >= before_creation);
+        assert!(file_entry.created_at <= after_creation);
+        assert!(file_entry.modified_at >= before_creation);
+        assert!(file_entry.modified_at <= after_creation);
+    }
+
+    #[tokio::test]
+    async fn test_list_directory_ids_are_unique() {
+        let mut fs = FileSystem::default();
+
+        fs.create_directory("/unique_test/".to_string())
+            .await
+            .unwrap();
+        fs.create_file("/unique_test/file1.txt".to_string())
+            .await
+            .unwrap();
+        fs.create_file("/unique_test/file2.txt".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/unique_test/subdir/".to_string())
+            .await
+            .unwrap();
+
+        let entries = fs
+            .list_directory("/unique_test/".to_string())
+            .await
+            .unwrap();
+
+        let ids: std::collections::HashSet<INodeId> = entries.iter().map(|e| e.id).collect();
+
+        // All IDs should be unique
+        assert_eq!(ids.len(), entries.len());
+
+        // No ID should be nil
+        for id in &ids {
+            assert_ne!(id.0, uuid::Uuid::nil());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_directory_with_trailing_slash_variations() {
+        let mut fs = FileSystem::default();
+
+        fs.create_directory("/testdir/".to_string()).await.unwrap();
+        fs.create_file("/testdir/file.txt".to_string())
+            .await
+            .unwrap();
+
+        let entries1 = fs.list_directory("/testdir/".to_string()).await.unwrap();
+        let entries2 = fs.list_directory("/testdir".to_string()).await.unwrap();
+
+        assert_eq!(entries1.len(), entries2.len());
+        assert_eq!(entries1[0].name, entries2[0].name);
+        assert_eq!(entries1[0].id, entries2[0].id);
+    }
+    #[tokio::test]
+    async fn test_list_directory_maintains_iteration_order() {
+        let mut fs = FileSystem::default();
+
+        // Create initial directory structure in a specific order
+        fs.create_directory("/ordered/".to_string()).await.unwrap();
+        fs.create_directory("/ordered/apple/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/ordered/banana/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/ordered/cherry/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/ordered/date/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/ordered/elderberry/".to_string())
+            .await
+            .unwrap();
+
+        // First listing
+        let entries_before = fs.list_directory("/ordered/".to_string()).await.unwrap();
+        let names_before: Vec<String> = entries_before.iter().map(|e| e.name.clone()).collect();
+
+        // Should be in alphabetical order due to BTreeMap
+        assert_eq!(
+            names_before,
+            vec!["apple", "banana", "cherry", "date", "elderberry"]
+        );
+
+        // Add a new directory that should appear in the middle alphabetically
+        fs.create_directory("/ordered/coconut/".to_string())
+            .await
+            .unwrap();
+
+        // Second listing
+        let entries_after = fs.list_directory("/ordered/".to_string()).await.unwrap();
+        let names_after: Vec<String> = entries_after.iter().map(|e| e.name.clone()).collect();
+
+        // New order should include coconut in the right position
+        assert_eq!(
+            names_after,
+            vec![
+                "apple",
+                "banana",
+                "cherry",
+                "coconut", // <- New directory inserted here
+                "date",
+                "elderberry"
+            ]
+        );
+
+        // Verify that all original entries are still present with same metadata
+        let original_entries_map: std::collections::HashMap<String, &DirectoryEntry> =
+            entries_before.iter().map(|e| (e.name.clone(), e)).collect();
+        let new_entries_map: std::collections::HashMap<String, &DirectoryEntry> =
+            entries_after.iter().map(|e| (e.name.clone(), e)).collect();
+
+        for (name, original_entry) in original_entries_map {
+            let current_entry = new_entries_map
+                .get(&name)
+                .unwrap_or_else(|| panic!("Original entry '{}' should still exist", name));
+
+            // Same ID, timestamps, and type
+            assert_eq!(original_entry.id, current_entry.id);
+            assert_eq!(original_entry.created_at, current_entry.created_at);
+            assert_eq!(original_entry.modified_at, current_entry.modified_at);
+            assert!(matches!(
+                (&original_entry.entry_type, &current_entry.entry_type),
+                (EntryType::File { .. }, EntryType::File { .. })
+                    | (EntryType::Directory { .. }, EntryType::Directory { .. })
+            ));
+        }
+
+        // Verify the new entry exists and is correct
+        let coconut_entry = new_entries_map.get("coconut").unwrap();
+        assert!(matches!(
+            coconut_entry.entry_type,
+            EntryType::Directory { child_count: 0 }
+        ));
+    }
+
+    /// Note: correctly is defined as:
+    /// 1) directories before files
+    /// 2) if equal by 1) then by case-insensitive comparison of names
+    /// 3) if equal by 2) then by case-sensitive comparison of names
+    #[tokio::test]
+    async fn test_list_directory_sorts_correctly() {
+        let mut fs = FileSystem::default();
+
+        fs.create_directory("/sorted-1/".to_string()).await.unwrap();
+        fs.create_directory("/sorted-2-files/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/sorted-2-dirs/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/sorted-3-files/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/sorted-3-dirs/".to_string())
+            .await
+            .unwrap();
+
+        // 1) directories before files
+
+        fs.create_file("/sorted-1/a".to_string()).await.unwrap();
+        fs.create_directory("/sorted-1/b/".to_string())
+            .await
+            .unwrap();
+
+        let entries = fs.list_directory("/sorted-1".to_string()).await.unwrap();
+        let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, vec!["b", "a"]);
+
+        // 2) case-insensitive comparison of names
+
+        fs.create_file("/sorted-2-files/a".to_string())
+            .await
+            .unwrap();
+        fs.create_file("/sorted-2-files/B".to_string())
+            .await
+            .unwrap();
+
+        fs.create_directory("/sorted-2-dirs/c/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/sorted-2-dirs/A/".to_string())
+            .await
+            .unwrap();
+
+        let entries = fs
+            .list_directory("/sorted-2-files".to_string())
+            .await
+            .unwrap();
+        let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, vec!["a", "B"]);
+
+        let entries = fs
+            .list_directory("/sorted-2-dirs".to_string())
+            .await
+            .unwrap();
+        let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, vec!["A", "c"]);
+
+        // 3) case-sensitive comparison of names
+        //
+        fs.create_file("/sorted-3-files/a".to_string())
+            .await
+            .unwrap();
+        fs.create_file("/sorted-3-files/A".to_string())
+            .await
+            .unwrap();
+
+        fs.create_directory("/sorted-3-dirs/a/".to_string())
+            .await
+            .unwrap();
+        fs.create_directory("/sorted-3-dirs/A/".to_string())
+            .await
+            .unwrap();
+
+        let entries = fs
+            .list_directory("/sorted-3-files".to_string())
+            .await
+            .unwrap();
+        let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, vec!["a", "A"]);
+
+        let entries = fs
+            .list_directory("/sorted-3-dirs".to_string())
+            .await
+            .unwrap();
+        let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, vec!["a", "A"]);
     }
 }
