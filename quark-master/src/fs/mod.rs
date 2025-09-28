@@ -1,10 +1,11 @@
 use crate::{BlockId, INodeId};
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Deref;
 use std::path::Path;
 use std::time::SystemTime;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::{debug, trace};
+use tracing::debug;
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, FileError>;
@@ -180,16 +181,10 @@ impl FileSystem {
             .ok_or(FileError::NotFound)?
             .to_string();
 
-        let parent_id = self.walk_inode_tree(parent).await?;
-
-        let new_inode = match create_type {
-            CreateType::Directory => INode::create_directory(name.clone(), parent_id.0),
-            CreateType::File => INode::create_file(name.clone(), parent_id.0),
-        };
-
-        let new_inode_id = new_inode.id;
-
         let mut guard = self.namespace.write().await;
+
+        let parent_id = self.walk_inode_tree_guarded(&guard, parent)?;
+
         let parent_inode = guard
             .get_mut(&parent_id)
             .ok_or(FileError::PossibleCorruption)?;
@@ -200,11 +195,19 @@ impl FileSystem {
                 if children.contains_key(&name) {
                     return Err(FileError::AlreadyExists);
                 }
+
+                let new_inode = match create_type {
+                    CreateType::Directory => INode::create_directory(name.clone(), parent_id.0),
+                    CreateType::File => INode::create_file(name.clone(), parent_id.0),
+                };
+
+                let new_inode_id = new_inode.id;
+
                 children.insert(name, new_inode_id);
+                guard.insert(new_inode_id, new_inode);
             }
         }
 
-        guard.insert(new_inode_id, new_inode);
         Ok(())
     }
     pub async fn get_inode(&self, path: impl AsRef<Path>) -> Result<INode> {
@@ -258,29 +261,45 @@ impl FileSystem {
 
     /// Find the id of the INode for the given path
     async fn walk_inode_tree(&self, path: impl AsRef<Path>) -> Result<INodeId> {
-        let path = path.as_ref();
-        debug!("Started walking inode tree");
+        debug!("Acquiring read lock to walk inode tree");
         let guard = self.namespace.read().await;
-        let mut current = guard.get(&self.root_id).ok_or(TraversalError::RootError)?;
-        trace!("Got root");
+
+        self.walk_inode_tree_guarded(&guard, path)
+    }
+
+    /// Walks INode tree with the provided guard, synchronously
+    /// The `G` type must be `tokio::sync::RwLocK{x}Guard`, callers
+    /// are expected to uphold this.
+    fn walk_inode_tree_guarded<G>(&self, guard: &G, path: impl AsRef<Path>) -> Result<INodeId>
+    where
+        G: Deref<Target = HashMap<INodeId, INode>>,
+    {
+        let namespace = &**guard;
+
+        let path = path.as_ref();
+        if path == Path::new("/") {
+            return Ok(self.root_id);
+        }
+
+        let mut current = namespace
+            .get(&self.root_id)
+            .ok_or(TraversalError::RootError)?;
+
         for component in path.components().skip(1) {
             let name = component.as_os_str().to_str().ok_or(TraversalError::Utf8)?;
-            trace!(component = ?name);
+
             current = match &current.kind {
+                INodeKind::File { .. } => return Err(TraversalError::WalkThroughFile.into()),
                 INodeKind::Directory { children } => {
                     let child_id = children.get(name).ok_or(FileError::NotFound)?;
-                    trace!(?child_id, "Found child");
 
-                    guard.get(child_id).ok_or(FileError::NotFound)?
+                    namespace
+                        .get(child_id)
+                        .ok_or(FileError::PossibleCorruption)?
                 }
-                INodeKind::File { .. } => {
-                    debug!("Tried to traverse into a file");
-                    return Err(TraversalError::WalkThroughFile.into());
-                }
-            };
-            trace!(?current);
+            }
         }
-        debug!("Finished walking inode tree");
+
         Ok(current.id)
     }
 }
