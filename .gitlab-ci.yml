@@ -1,0 +1,181 @@
+stages:
+  - check
+  - test
+  - safety
+  - scheduled
+
+variables:
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  RUST_BACKTRACE: "1"
+
+cache:
+  key: "$CI_JOB_NAME"
+  paths:
+    - .cargo/
+    - target/
+
+.rust_template: &rust_template
+  image: rust:latest
+  before_script:
+    - apt-get update -qq && apt-get install -qq git protobuf-compiler
+    - rustc --version
+    - cargo --version
+    - protoc --version
+
+# Format check
+fmt:
+  <<: *rust_template
+  stage: check
+  script:
+    - rustup component add rustfmt
+    - cargo fmt --check
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Clippy checks
+.clippy_template: &clippy_template
+  <<: *rust_template
+  stage: check
+  script:
+    - rustup component add clippy
+    - cargo clippy --all-features --all-targets -- -D warnings
+
+clippy:stable:
+  <<: *clippy_template
+  image: rust:latest
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+clippy:beta:
+  <<: *clippy_template
+  image: rustlang/rust:nightly
+  script:
+    - rustup default beta
+    - rustup component add clippy
+    - cargo clippy --all-features --all-targets -- -D warnings
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+
+# Could re-enable if the crate ever gets published
+
+# Semver check
+#semver:
+#  <<: *rust_template
+#  stage: check
+#  script:
+#    - cargo install cargo-semver-checks
+#    - cargo semver-checks
+#  rules:
+#    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+#    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Documentation check
+#doc:
+#  image: rustlang/rust:nightly
+#  stage: check
+#  script:
+#    - cargo install cargo-docs-rs
+#    - cargo docs-rs
+#  rules:
+#    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+#    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Feature combinations check
+hack:
+  <<: *rust_template
+  stage: check
+  script:
+    - cargo install cargo-hack
+    - cargo hack --feature-powerset check
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# MSRV check
+#msrv:
+#  image: rust:1.56.1
+#  stage: check
+#  script:
+#   - cargo check
+#  rules:
+#    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+#    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Test suite
+.test_template: &test_template
+  <<: *rust_template
+  stage: test
+  script:
+    - |
+      if [ ! -f Cargo.lock ]; then
+        cargo generate-lockfile
+      fi
+    - cargo test --locked --all-features --all-targets
+    - cargo test --locked --all-features --doc
+
+test:stable:
+  <<: *test_template
+  image: rust:latest
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+test:beta:
+  <<: *test_template
+  image: rustlang/rust:nightly
+  script:
+    - rustup default beta
+    - |
+      if [ ! -f Cargo.lock ]; then
+        cargo generate-lockfile
+      fi
+    - cargo test --locked --all-features --all-targets
+    - cargo test --locked --all-features --doc
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+#
+#loom:
+#  <<: *rust_template
+#  stage: safety
+#  script:
+#    - LOOM_MAX_PREEMPTIONS=2 RUSTFLAGS="--cfg loom" cargo test --release --test loom
+#  rules:
+#    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+#    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+#
+
+
+# Scheduled jobs
+test:nightly:
+  image: rustlang/rust:nightly
+  stage: scheduled
+  script:
+    - |
+      if [ ! -f Cargo.lock ]; then
+        cargo generate-lockfile
+      fi
+    - cargo test --locked --all-features --all-targets
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+test:updated:
+  image: rustlang/rust:nightly
+  stage: scheduled
+  script:
+    - rustup default beta
+    - |
+      if [ -f Cargo.lock ]; then
+        cargo update
+        RUSTFLAGS="-D deprecated" cargo test --locked --all-features --all-targets
+      fi
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
