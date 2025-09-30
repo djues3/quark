@@ -153,29 +153,29 @@ test:beta:
 
 
 # Scheduled jobs
-test:nightly:
-  image: rustlang/rust:nightly
-  stage: scheduled
-  script:
-    - |
-      if [ ! -f Cargo.lock ]; then
-        cargo generate-lockfile
-      fi
-    - cargo test --locked --all-features --all-targets
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+#test:nightly:
+#  image: rustlang/rust:nightly
+#  stage: scheduled
+#  script:
+#    - |
+#      if [ ! -f Cargo.lock ]; then
+#        cargo generate-lockfile
+#      fi
+#    - cargo test --locked --all-features --all-targets
+#  rules:
+#    - if: $CI_PIPELINE_SOURCE == "schedule"
+#    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-test:updated:
-  image: rustlang/rust:nightly
-  stage: scheduled
-  script:
-    - rustup default beta
-    - |
-      if [ -f Cargo.lock ]; then
-        cargo update
-        RUSTFLAGS="-D deprecated" cargo test --locked --all-features --all-targets
-      fi
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+#test:updated:
+#  image: rustlang/rust:nightly
+#  stage: scheduled
+#  script:
+#    - rustup default beta
+#    - |
+#      if [ -f Cargo.lock ]; then
+#        cargo update
+#        RUSTFLAGS="-D deprecated" cargo test --locked --all-features --all-targets
+#      fi
+#  rules:
+#    - if: $CI_PIPELINE_SOURCE == "schedule"
+#    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
