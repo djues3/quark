@@ -1,6 +1,5 @@
 use crate::{BlockId, INodeId};
 use std::collections::{BTreeMap, HashMap};
-use std::ops::Deref;
 use std::path::Path;
 use std::time::SystemTime;
 use thiserror::Error;
@@ -259,6 +258,14 @@ impl FileSystem {
         }
     }
 
+    pub async fn stat(&self, path: impl AsRef<Path>) -> Result<DirectoryEntry> {
+        let guard = self.namespace.read().await;
+        let inode_id = self.walk_inode_tree_guarded(&guard, path)?;
+        let inode = guard.get(&inode_id).ok_or(FileError::PossibleCorruption)?;
+
+        Ok(DirectoryEntry::from_inode(inode.name.clone(), inode))
+    }
+
     /// Find the id of the INode for the given path
     async fn walk_inode_tree(&self, path: impl AsRef<Path>) -> Result<INodeId> {
         debug!("Acquiring read lock to walk inode tree");
@@ -270,12 +277,11 @@ impl FileSystem {
     /// Walks INode tree with the provided guard, synchronously
     /// The `G` type must be `tokio::sync::RwLocK{x}Guard`, callers
     /// are expected to uphold this.
-    fn walk_inode_tree_guarded<G>(&self, guard: &G, path: impl AsRef<Path>) -> Result<INodeId>
-    where
-        G: Deref<Target = HashMap<INodeId, INode>>,
-    {
-        let namespace = &**guard;
-
+    fn walk_inode_tree_guarded(
+        &self,
+        namespace: &HashMap<INodeId, INode>,
+        path: impl AsRef<Path>,
+    ) -> Result<INodeId> {
         let path = path.as_ref();
         if path == Path::new("/") {
             return Ok(self.root_id);

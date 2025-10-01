@@ -527,3 +527,31 @@ async fn test_list_directory_sorts_correctly() {
     let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
     assert_eq!(names, vec!["a", "A"]);
 }
+
+#[tokio::test]
+async fn test_stat_fail() {
+    let mut fs = FileSystem::default();
+
+    fs.create_directory("/testdir/").await.unwrap();
+    fs.create_file("/testdir/file.txt").await.unwrap();
+
+    let res = fs.stat("/teGtdir/").await;
+    assert!(matches!(res.unwrap_err(), FileError::NotFound));
+}
+
+#[tokio::test]
+async fn test_stat_success() {
+    let mut fs = FileSystem::default();
+
+    fs.create_directory("/testdir/").await.unwrap();
+    fs.create_file("/testdir/file.txt").await.unwrap();
+
+    let res = fs.stat("/testdir").await;
+    assert!(matches!(
+        res.unwrap().entry_type,
+        EntryType::Directory { .. }
+    ));
+
+    let res = fs.stat("/testdir/file.txt").await;
+    assert!(matches!(res.unwrap().entry_type, EntryType::File { .. }));
+}
