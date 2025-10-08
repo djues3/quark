@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
     fs.create_directory("/abcd/").await?;
     fs.create_directory("/abcd/a/").await?;
     fs.create_directory("/abcd/b/").await?;

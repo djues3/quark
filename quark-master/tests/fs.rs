@@ -4,7 +4,7 @@ use quark_master::{INodeId, fs::*};
 
 #[tokio::test]
 async fn test_create_directory_success() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     // Should successfully create a directory
     let result = fs.create_directory("/test/").await;
@@ -27,7 +27,7 @@ async fn test_cannot_get_inode() {
 
 #[tokio::test]
 async fn test_create_nested_directories() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     fs.create_directory("/parent/").await.unwrap();
 
@@ -46,7 +46,7 @@ async fn test_create_nested_directories() {
 
 #[tokio::test]
 async fn test_create_file_success() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     // Create a file
     let result = fs.create_file("/test.txt".to_string()).await;
@@ -60,7 +60,7 @@ async fn test_create_file_success() {
 
 #[tokio::test]
 async fn test_create_file_in_directory() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     fs.create_directory("/docs/").await.unwrap();
 
@@ -73,7 +73,7 @@ async fn test_create_file_in_directory() {
 
 #[tokio::test]
 async fn test_cannot_traverse_through_file() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     fs.create_file("/document.txt").await.unwrap();
 
@@ -103,11 +103,11 @@ async fn test_cannot_traverse_through_file() {
 
 #[tokio::test]
 async fn test_path_validation() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     // Non-absolute paths should fail
     let result = fs.create_directory("relative/path/").await;
-    assert!(matches!(result.unwrap_err(), FileError::NonAbsolutePath));
+    assert!(matches!(result.unwrap_err(), FileError::PathError(..)));
 
     // Directory paths must end with /
     let result = fs.create_directory("/no-trailing-slash").await;
@@ -120,7 +120,7 @@ async fn test_path_validation() {
 
 #[tokio::test]
 async fn test_parent_must_exist() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     let result = fs.create_directory("/nonexistent/child/").await;
     assert!(result.is_err());
@@ -131,7 +131,7 @@ async fn test_parent_must_exist() {
 
 #[tokio::test]
 async fn test_cannot_create_duplicate() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     // Create directory
     fs.create_directory("/test/".to_string()).await.unwrap();
@@ -147,7 +147,7 @@ async fn test_cannot_create_duplicate() {
 
 #[tokio::test]
 async fn test_complex_filesystem_structure() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     fs.create_directory("/abcd/").await.unwrap();
     fs.create_directory("/abcd/a/").await.unwrap();
@@ -174,7 +174,7 @@ async fn test_complex_filesystem_structure() {
 }
 
 async fn setup_basic_fs() -> FileSystem {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
     fs.create_directory("/tmp/").await.unwrap();
     fs.create_directory("/home/").await.unwrap();
     fs.create_directory("/etc/").await.unwrap();
@@ -195,7 +195,7 @@ async fn test_with_setup_helper() {
 
 #[tokio::test]
 async fn test_list_directory_with_mixed_content() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     // Create a directory with files and subdirectories
     fs.create_directory("/projects/").await.unwrap();
@@ -258,7 +258,7 @@ async fn test_list_directory_with_mixed_content() {
 
 #[tokio::test]
 async fn test_list_empty_directory() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
     fs.create_directory("/empty/").await.unwrap();
 
     let entries = fs.list_directory("/empty/").await.unwrap();
@@ -267,7 +267,7 @@ async fn test_list_empty_directory() {
 
 #[tokio::test]
 async fn test_list_root_directory() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     // Add some items to root
     fs.create_directory("/home/").await.unwrap();
@@ -286,7 +286,7 @@ async fn test_list_root_directory() {
 
 #[tokio::test]
 async fn test_list_directory_error_on_file() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
     fs.create_file("/not_a_directory.txt").await.unwrap();
 
     let result = fs.list_directory("/not_a_directory.txt").await;
@@ -305,7 +305,7 @@ async fn test_list_nonexistent_directory() {
 
 #[tokio::test]
 async fn test_list_directory_entry_types_are_correct() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     // Create nested structure to verify child counts
     fs.create_directory("/test/").await.unwrap();
@@ -347,7 +347,7 @@ async fn test_list_directory_entry_types_are_correct() {
 
 #[tokio::test]
 async fn test_list_directory_preserves_timestamps() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     let before_creation = SystemTime::now();
     fs.create_directory("/timestamped/").await.unwrap();
@@ -366,7 +366,7 @@ async fn test_list_directory_preserves_timestamps() {
 
 #[tokio::test]
 async fn test_list_directory_ids_are_unique() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     fs.create_directory("/unique_test/").await.unwrap();
     fs.create_file("/unique_test/file1.txt").await.unwrap();
@@ -388,7 +388,7 @@ async fn test_list_directory_ids_are_unique() {
 
 #[tokio::test]
 async fn test_list_directory_with_trailing_slash_variations() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     fs.create_directory("/testdir/").await.unwrap();
     fs.create_file("/testdir/file.txt").await.unwrap();
@@ -402,7 +402,7 @@ async fn test_list_directory_with_trailing_slash_variations() {
 }
 #[tokio::test]
 async fn test_list_directory_maintains_iteration_order() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     // Create initial directory structure in a specific order
     fs.create_directory("/ordered/").await.unwrap();
@@ -478,7 +478,7 @@ async fn test_list_directory_maintains_iteration_order() {
 /// 3) if equal by 2) then by case-sensitive comparison of names
 #[tokio::test]
 async fn test_list_directory_sorts_correctly() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     fs.create_directory("/sorted-1/").await.unwrap();
     fs.create_directory("/sorted-2-files/").await.unwrap();
@@ -530,7 +530,7 @@ async fn test_list_directory_sorts_correctly() {
 
 #[tokio::test]
 async fn test_stat_fail() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     fs.create_directory("/testdir/").await.unwrap();
     fs.create_file("/testdir/file.txt").await.unwrap();
@@ -541,7 +541,7 @@ async fn test_stat_fail() {
 
 #[tokio::test]
 async fn test_stat_success() {
-    let mut fs = FileSystem::default();
+    let fs = FileSystem::default();
 
     fs.create_directory("/testdir/").await.unwrap();
     fs.create_file("/testdir/file.txt").await.unwrap();
@@ -554,4 +554,151 @@ async fn test_stat_success() {
 
     let res = fs.stat("/testdir/file.txt").await;
     assert!(matches!(res.unwrap().entry_type, EntryType::File { .. }));
+}
+
+#[tokio::test]
+async fn test_delete_file() {
+    let fs = FileSystem::default();
+
+    fs.create_file("/document.txt").await.unwrap();
+
+    let blocks = fs.delete("/document.txt", false).await.unwrap();
+    assert!(blocks.is_empty()); // New file has no blocks yet
+
+    // Verify file is gone
+    let result = fs.get_inode("/document.txt").await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_delete_empty_directory_without_recursive() {
+    let fs = FileSystem::default();
+
+    fs.create_directory("/empty/").await.unwrap();
+
+    // Should fail - directories require recursive flag
+    let result = fs.delete("/empty/", false).await;
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), FileError::NonRecursiveDelete));
+
+    // Verify directory still exists
+    let inode = fs.get_inode("/empty/").await.unwrap();
+    assert!(matches!(inode.kind, INodeKind::Directory { .. }));
+}
+
+#[tokio::test]
+async fn test_delete_empty_directory_with_recursive() {
+    let fs = FileSystem::default();
+
+    fs.create_directory("/empty/").await.unwrap();
+
+    fs.delete("/empty/", true).await.unwrap();
+
+    // Verify directory is gone
+    let result = fs.get_inode("/empty/").await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_delete_non_empty_directory_without_recursive() {
+    let fs = FileSystem::default();
+
+    fs.create_directory("/docs/").await.unwrap();
+    fs.create_file("/docs/readme.txt").await.unwrap();
+
+    // Should fail - non-empty directory without recursive
+    let result = fs.delete("/docs/", false).await;
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), FileError::NonRecursiveDelete));
+
+    // Verify directory and file still exist
+    assert!(fs.get_inode("/docs/").await.is_ok());
+    assert!(fs.get_inode("/docs/readme.txt").await.is_ok());
+}
+
+#[tokio::test]
+async fn test_delete_non_empty_directory_with_recursive() {
+    let fs = FileSystem::default();
+
+    fs.create_directory("/docs/").await.unwrap();
+    fs.create_file("/docs/readme.txt").await.unwrap();
+    fs.create_file("/docs/guide.txt").await.unwrap();
+
+    fs.delete("/docs/", true).await.unwrap();
+
+    // Verify directory and all files are gone
+    assert!(fs.get_inode("/docs/").await.is_err());
+    assert!(fs.get_inode("/docs/readme.txt").await.is_err());
+    assert!(fs.get_inode("/docs/guide.txt").await.is_err());
+}
+
+#[tokio::test]
+async fn test_delete_nested_directories() {
+    let fs = FileSystem::default();
+
+    fs.create_directory("/a/").await.unwrap();
+    fs.create_directory("/a/b/").await.unwrap();
+    fs.create_directory("/a/b/c/").await.unwrap();
+    fs.create_file("/a/b/c/file.txt").await.unwrap();
+    fs.create_file("/a/file1.txt").await.unwrap();
+
+    fs.delete("/a/", true).await.unwrap();
+
+    // Verify entire tree is gone
+    assert!(fs.get_inode("/a/").await.is_err());
+    assert!(fs.get_inode("/a/b/").await.is_err());
+    assert!(fs.get_inode("/a/b/c/").await.is_err());
+    assert!(fs.get_inode("/a/b/c/file.txt").await.is_err());
+    assert!(fs.get_inode("/a/file1.txt").await.is_err());
+}
+
+#[tokio::test]
+async fn test_delete_root_fails() {
+    let fs = FileSystem::default();
+
+    let result = fs.delete("/", true).await;
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), FileError::CannotDeleteRoot));
+}
+
+#[tokio::test]
+async fn test_delete_nonexistent_path() {
+    let fs = FileSystem::default();
+
+    let result = fs.delete("/nonexistent.txt", false).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_delete_file_in_nested_directory() {
+    let fs = FileSystem::default();
+
+    fs.create_directory("/docs/").await.unwrap();
+    fs.create_directory("/docs/guides/").await.unwrap();
+    fs.create_file("/docs/guides/setup.txt").await.unwrap();
+
+    fs.delete("/docs/guides/setup.txt", false).await.unwrap();
+
+    // Verify only the file is gone, directories remain
+    assert!(fs.get_inode("/docs/").await.is_ok());
+    assert!(fs.get_inode("/docs/guides/").await.is_ok());
+    assert!(fs.get_inode("/docs/guides/setup.txt").await.is_err());
+}
+
+#[tokio::test]
+async fn test_delete_preserves_siblings() {
+    let fs = FileSystem::default();
+
+    fs.create_directory("/parent/").await.unwrap();
+    fs.create_file("/parent/file1.txt").await.unwrap();
+    fs.create_file("/parent/file2.txt").await.unwrap();
+    fs.create_directory("/parent/subdir/").await.unwrap();
+
+    fs.delete("/parent/file1.txt", false).await.unwrap();
+
+    // Verify siblings still exist
+    assert!(fs.get_inode("/parent/").await.is_ok());
+    assert!(fs.get_inode("/parent/file2.txt").await.is_ok());
+    assert!(fs.get_inode("/parent/subdir/").await.is_ok());
+    assert!(fs.get_inode("/parent/file1.txt").await.is_err());
 }

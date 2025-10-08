@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::fs::*;
+use crate::fs::FileSystem;
 use dashmap::DashMap;
 use uuid::Uuid;
 
@@ -24,7 +24,7 @@ pub struct SlaveId(pub u64);
 /// Metadata about a single data block, tracking its location and state.
 #[derive(Debug, Clone)]
 pub struct BlockInfo {
-    /// The list of SlaveIds that currently hold a replica of this block.
+    /// The list of `SlaveId`s that currently hold a replica of this block.
     pub locations: Vec<SlaveId>,
     /// The size of the block in bytes. The last block may not be full.
     pub size: u64,
@@ -82,10 +82,10 @@ pub struct MasterState {
 }
 
 impl MasterState {
-    /// Creates a new MasterState.
-    pub async fn new(config: MasterConfig) -> Self {
+    /// Creates a new `MasterState`.
+    pub fn new(config: MasterConfig) -> Self {
         Self {
-            fs: Default::default(),
+            fs: FileSystem::default(),
             block_map: DashMap::new(),
             slaves: DashMap::new(),
             config,

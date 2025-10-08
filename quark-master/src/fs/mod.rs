@@ -1,12 +1,19 @@
 use crate::{BlockId, INodeId};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::SystemTime;
-use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::debug;
-use uuid::Uuid;
 
+pub mod errors;
+pub mod inode;
+mod path;
+
+pub use errors::*;
+pub use inode::*;
+use path::normalize_path;
+#[cfg(test)]
+use tokio::sync::RwLockReadGuard;
+use tracing::{error, info, trace};
 type Result<T> = std::result::Result<T, FileError>;
 
 #[derive(Debug)]
@@ -39,90 +46,10 @@ pub enum FsOp {
     Rename { from: String, to: String },
 }
 
-/// Represents a single entry in the filesystem, either a file or a directory.
-#[derive(Debug, Clone)]
-pub struct INode {
-    /// The unique ID of this INode.
-    pub id: INodeId,
-    /// The ID of the parent directory. The root's parent is itself.
-    pub parent: INodeId,
-    /// The name of this node within its parent directory.
-    pub name: String,
-    /// The creation timestamp.
-    pub created_at: SystemTime,
-    /// The last modification timestamp.
-    pub modified_at: SystemTime,
-    /// The data specific to whether this is a file or a directory.
-    pub kind: INodeKind,
+enum CreateType {
+    Directory,
+    File,
 }
-
-/// The specific data for either a file or a directory.
-#[derive(Debug, Clone)]
-pub enum INodeKind {
-    /// A file, which is composed of an ordered sequence of blocks.
-    File {
-        /// The list of block IDs that make up this file's content.
-        blocks: Vec<BlockId>,
-    },
-    /// A directory, which contains other INodes.
-    Directory {
-        /// A map of child names to their respective INode IDs.
-        children: BTreeMap<String, INodeId>,
-    },
-}
-
-impl INode {
-    /// Creates a new INode with the specified id, parent and specified file / directory data.
-    pub fn new(name: String, id: Uuid, parent_id: Uuid, kind: INodeKind) -> Self {
-        let now = SystemTime::now();
-        Self {
-            id: INodeId(id),
-            parent: INodeId(parent_id),
-            name,
-            created_at: now,
-            modified_at: now,
-            kind,
-        }
-    }
-
-    pub fn create_directory(name: String, parent_id: Uuid) -> Self {
-        let id = Uuid::now_v7();
-        INode::new(
-            name,
-            id,
-            parent_id,
-            INodeKind::Directory {
-                children: BTreeMap::new(),
-            },
-        )
-    }
-    pub fn create_file(name: String, parent_id: Uuid) -> Self {
-        let id = Uuid::now_v7();
-        INode::new(name, id, parent_id, INodeKind::File { blocks: Vec::new() })
-    }
-
-    pub fn create_root() -> Self {
-        let now = SystemTime::now();
-        let id = Uuid::new_v7(now.try_into().expect("current time is after UNIX_EPOCH"));
-        Self {
-            id: INodeId(id),
-            parent: crate::INodeId(id),
-            name: "/".to_string(),
-            created_at: now,
-            modified_at: now,
-            kind: INodeKind::Directory {
-                children: BTreeMap::new(),
-            },
-        }
-    }
-}
-
-impl Default for FileSystem {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl FileSystem {
     /// Creates a new filesystem with a root directory.
     pub fn new() -> Self {
@@ -137,91 +64,47 @@ impl FileSystem {
         }
     }
     /// Creates a new directory at the specified path.
-    /// The path must end with a `/`
     /// The creation will fail if any part of the path doesn't exist.
-    pub async fn create_directory(&mut self, path: impl AsRef<Path>) -> Result<()> {
+    pub async fn create_directory(&self, path: impl AsRef<Path>) -> Result<()> {
         self.create_inode(path, CreateType::Directory).await
     }
 
     /// Creates a new file at the specified path.
     /// The path must not end with a `/`
-    /// The creation will fail if the parent directory doesn't exist
-    pub async fn create_file(&mut self, path: impl AsRef<Path>) -> Result<()> {
+    /// The creation will fail if the parent directory, or any part of the path, doesn't exist
+    pub async fn create_file(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
-        let path_str = path.to_str().ok_or(TraversalError::Utf8)?;
-        if path_str.ends_with("/") {
+
+        // TODO: make this nicer?
+        if path
+            .to_str()
+            .ok_or(PathNormalizationError::InvalidUtf8)?
+            .ends_with("/")
+        {
             return Err(FileError::FileError);
         }
+
+        let path = normalize_path(path)?;
 
         self.create_inode(path, CreateType::File).await
     }
 
-    async fn create_inode(
-        &mut self,
-        path: impl AsRef<Path>,
-        create_type: CreateType,
-    ) -> Result<()> {
-        let path = path.as_ref();
-        match create_type {
-            CreateType::File if path.ends_with("/") => {
-                return Err(FileError::FileError);
-            }
-            _ => {}
-        }
-        if !path.is_absolute() {
-            return Err(FileError::NonAbsolutePath);
-        }
-
-        let parent = path.parent().ok_or(FileError::RootForbidden)?;
-        let name = path
-            .file_name()
-            .ok_or(FileError::NotFound)?
-            .to_str()
-            .ok_or(FileError::NotFound)?
-            .to_string();
-
-        let mut guard = self.namespace.write().await;
-
-        let parent_id = self.walk_inode_tree_guarded(&guard, parent)?;
-
-        let parent_inode = guard
-            .get_mut(&parent_id)
-            .ok_or(FileError::PossibleCorruption)?;
-
-        match &mut parent_inode.kind {
-            INodeKind::File { .. } => return Err(FileError::FileAsParent),
-            INodeKind::Directory { children } => {
-                if children.contains_key(&name) {
-                    return Err(FileError::AlreadyExists);
-                }
-
-                let new_inode = match create_type {
-                    CreateType::Directory => INode::create_directory(name.clone(), parent_id.0),
-                    CreateType::File => INode::create_file(name.clone(), parent_id.0),
-                };
-
-                let new_inode_id = new_inode.id;
-
-                children.insert(name, new_inode_id);
-                guard.insert(new_inode_id, new_inode);
-            }
-        }
-
-        Ok(())
-    }
+    /// Returns the `INode` matching the provided path.
+    /// Currently, it clones the INode to get around ownership constraints.
+    /// Since `BTreeMap`s can be large, use `stat` unless you need this data
     pub async fn get_inode(&self, path: impl AsRef<Path>) -> Result<INode> {
-        let inode_id = self.walk_inode_tree(path.as_ref()).await?;
+        let path = normalize_path(path)?;
         let guard = self.namespace.read().await;
+        let inode_id = walk_inode_tree(&guard, &self.root_id, path)?;
         let inode = guard.get(&inode_id).ok_or(FileError::PossibleCorruption)?;
         Ok(inode.clone())
     }
 
     /// Returns a `ls` of the specified directory
     pub async fn list_directory(&self, path: impl AsRef<Path>) -> Result<Vec<DirectoryEntry>> {
-        //debug!(path = ?path, "Listing directory");
-        //let path = Path::new(&path);
-        let inode_id = self.walk_inode_tree(path.as_ref()).await?;
+        let path = normalize_path(path)?;
         let guard = self.namespace.read().await;
+        let inode_id = walk_inode_tree(&guard, &self.root_id, path)?;
         let inode = guard.get(&inode_id).ok_or(FileError::PossibleCorruption)?;
         match &inode.kind {
             INodeKind::File { .. } => Err(FileError::DirectoryError),
@@ -258,93 +141,185 @@ impl FileSystem {
         }
     }
 
+    /// Returns the `DirectoryEntry` matching the provided path.
     pub async fn stat(&self, path: impl AsRef<Path>) -> Result<DirectoryEntry> {
+        let path = normalize_path(path)?;
         let guard = self.namespace.read().await;
-        let inode_id = self.walk_inode_tree_guarded(&guard, path)?;
+        let inode_id = walk_inode_tree(&guard, &self.root_id, path)?;
         let inode = guard.get(&inode_id).ok_or(FileError::PossibleCorruption)?;
 
         Ok(DirectoryEntry::from_inode(inode.name.clone(), inode))
     }
 
-    /// Find the id of the INode for the given path
-    async fn walk_inode_tree(&self, path: impl AsRef<Path>) -> Result<INodeId> {
-        debug!("Acquiring read lock to walk inode tree");
-        let guard = self.namespace.read().await;
+    async fn create_inode(&self, path: impl AsRef<Path>, create_type: CreateType) -> Result<()> {
+        let path = normalize_path(path)?;
 
-        self.walk_inode_tree_guarded(&guard, path)
-    }
+        let parent = path.parent().ok_or(FileError::RootForbidden)?;
 
-    /// Walks INode tree with the provided guard, synchronously
-    /// The `G` type must be `tokio::sync::RwLocK{x}Guard`, callers
-    /// are expected to uphold this.
-    fn walk_inode_tree_guarded(
-        &self,
-        namespace: &HashMap<INodeId, INode>,
-        path: impl AsRef<Path>,
-    ) -> Result<INodeId> {
-        let path = path.as_ref();
-        if path == Path::new("/") {
-            return Ok(self.root_id);
+        let name = path
+            .file_name()
+            .ok_or(FileError::NotFound)?
+            .to_str()
+            .ok_or(FileError::NotFound)?
+            .to_string();
+
+        let mut guard = self.namespace.write().await;
+
+        let parent_id = walk_inode_tree(&guard, &self.root_id, parent)?;
+
+        let parent_inode = guard
+            .get_mut(&parent_id)
+            .ok_or(FileError::PossibleCorruption)?;
+
+        match &mut parent_inode.kind {
+            INodeKind::File { .. } => return Err(FileError::FileAsParent),
+            INodeKind::Directory { children } => {
+                if children.contains_key(&name) {
+                    return Err(FileError::AlreadyExists);
+                }
+
+                let new_inode = match create_type {
+                    CreateType::Directory => INode::create_directory(name.clone(), parent_id.0),
+                    CreateType::File => INode::create_file(name.clone(), parent_id.0),
+                };
+
+                let new_inode_id = new_inode.id;
+
+                children.insert(name, new_inode_id);
+                guard.insert(new_inode_id, new_inode);
+            }
         }
 
-        let mut current = namespace
-            .get(&self.root_id)
-            .ok_or(TraversalError::RootError)?;
+        Ok(())
+    }
 
-        for component in path.components().skip(1) {
-            let name = component.as_os_str().to_str().ok_or(TraversalError::Utf8)?;
+    /// Deletes the requested INode.
+    /// Returns the blocks which need to be deleted, if any, or an error.
+    pub async fn delete(&self, path: impl AsRef<Path>, recursive: bool) -> Result<Vec<BlockId>> {
+        let path = normalize_path(path)?;
 
-            current = match &current.kind {
-                INodeKind::File { .. } => return Err(TraversalError::WalkThroughFile.into()),
+        if path == Path::new("/") {
+            error!("Tried to delete root");
+            return Err(FileError::CannotDeleteRoot);
+        }
+        info!("Deleting path: {path:?}");
+
+        let mut guard = self.namespace.write().await;
+        let inode_id = walk_inode_tree(&guard, &self.root_id, &path)?;
+        trace!("Got inode_id: {inode_id:?}");
+
+        // get reference instead of removing from the map since errors could still occur
+        // so there is no need to handle rolling back transactions.
+        let inode = guard.get(&inode_id).ok_or(FileError::PossibleCorruption)?;
+
+        // DFS stack used to avoid recursion
+        let mut stack = Vec::new();
+
+        let mut to_delete = Vec::new();
+
+        stack.push(inode_id);
+        let mut block_ids: Vec<BlockId> = Vec::new();
+        // The deleting of `INode`s is a two step process:
+        // 1) add all `INodeId`s to delete to the visited set (this also tracks all ids to delete)
+        // 2) iterate through the visited set and delete all the `INode`s this also makes the code simpler,
+        // since there is no need to rollback any deletions on an error
+        while let Some(id) = stack.pop() {
+            to_delete.push(id);
+            trace!("New iterations; stack: {stack:?}, current: {}", id.0);
+
+            let inode = guard.get(&id).ok_or(FileError::PossibleCorruption)?;
+            match &inode.kind {
+                // `BlockId` implements `Copy` so this will copy the ids
+                INodeKind::File { blocks } => block_ids.extend(blocks.iter()),
                 INodeKind::Directory { children } => {
-                    let child_id = children.get(name).ok_or(FileError::NotFound)?;
-
-                    namespace
-                        .get(child_id)
-                        .ok_or(FileError::PossibleCorruption)?
+                    // Cannot delete a directory without recursive mode (matches Unix)
+                    if !recursive {
+                        return Err(FileError::NonRecursiveDelete);
+                    }
+                    stack.extend(children.values())
                 }
             }
         }
 
-        Ok(current.id)
+        let parent_id = inode.parent;
+        // `walk_inode_tree` checked that the parent must exist, so unwrap is fine.
+        let parent = guard.get_mut(&parent_id).unwrap();
+
+        // actually deletes the `INode`s from the filesystem
+        if let INodeKind::Directory { children } = &mut parent.kind {
+            // path is guaranteed to contain at least one component due to root being disallowed
+            let name = path.components().next_back().unwrap();
+            debug_assert!(!name.as_os_str().is_empty());
+            children.remove(&name.as_os_str().to_str().unwrap().to_string());
+        }
+        for id in to_delete {
+            guard.remove(&id);
+        }
+
+        Ok(block_ids)
+    }
+
+    pub async fn allocate_blocks(
+        &self,
+        path: impl AsRef<Path>,
+        blocks: impl IntoIterator<Item = BlockId>,
+    ) -> Result<()> {
+        let path = normalize_path(path)?;
+        let mut guard = self.namespace.write().await;
+        let inode_id = walk_inode_tree(&guard, &self.root_id, path)?;
+        let inode = guard
+            .get_mut(&inode_id)
+            .ok_or(FileError::PossibleCorruption)?;
+        inode
+            .append_blocks(blocks)
+            .map_err(|_| FileError::AppendBlocksToDirectory)?;
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub async fn read(&self) -> RwLockReadGuard<'_, HashMap<INodeId, INode>> {
+        self.namespace.read().await
     }
 }
 
-#[derive(Debug, Error, PartialEq)]
-pub enum FileError {
-    #[error("Non-absolute paths aren't supported")]
-    NonAbsolutePath,
-    #[error("Tried to create directory with non directory path")]
-    DirectoryError,
-    #[error("Tried to create file with a directory-like path")]
-    FileError,
-    #[error("Cannot modify root directory")]
-    RootForbidden,
-    #[error("File as parent")]
-    FileAsParent,
-    #[error("File not found")]
-    NotFound,
-    #[error("File system probably corrupted, file was directory now is file")]
-    PossibleCorruption,
-    #[error("Error while traversing file system: {0}")]
-    TraversalError(#[from] TraversalError),
-    #[error("Specified name already exists")]
-    AlreadyExists,
+/// Walks `INode` tree with the provided map.
+/// Assumes that the provided `root_id` matches the `root_id` of the provided namespace
+fn walk_inode_tree(
+    namespace: &HashMap<INodeId, INode>,
+    root_id: &INodeId,
+    path: impl AsRef<Path>,
+) -> Result<INodeId> {
+    let path = path.as_ref();
+    if path == Path::new("/") {
+        return Ok(*root_id);
+    }
+
+    let mut current = namespace.get(root_id).ok_or(TraversalError::RootError)?;
+
+    for component in path.components().skip(1) {
+        // path is all valid UTF-8 as checked by `normalize_path`. so unwrap is ok
+        let name = component.as_os_str().to_str().unwrap();
+
+        current = match &current.kind {
+            INodeKind::File { .. } => return Err(TraversalError::WalkThroughFile.into()),
+            INodeKind::Directory { children } => {
+                let child_id = children.get(name).ok_or(FileError::NotFound)?;
+
+                namespace
+                    .get(child_id)
+                    .ok_or(FileError::PossibleCorruption)?
+            }
+        }
+    }
+
+    Ok(current.id)
 }
 
-#[derive(Debug, Error, PartialEq)]
-pub enum TraversalError {
-    #[error("Tried to walk through File INode")]
-    WalkThroughFile,
-    #[error("Couldn't find root, filesystem is probably corrupted")]
-    RootError,
-    #[error("Error parsing UTF-8")]
-    Utf8,
-}
-
-enum CreateType {
-    Directory,
-    File,
+impl Default for FileSystem {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DirectoryEntry {
@@ -363,5 +338,74 @@ impl DirectoryEntry {
                 },
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn test_delete_nested_directories() {
+        let fs = FileSystem::default();
+
+        fs.create_directory("/a/").await.unwrap();
+        fs.create_directory("/a/b/").await.unwrap();
+        fs.create_directory("/a/b/c/").await.unwrap();
+        fs.create_file("/a/b/c/file.txt").await.unwrap();
+        fs.create_file("/a/file1.txt").await.unwrap();
+
+        let id = fs.get_inode("/a/").await.unwrap().id;
+
+        fs.delete("/a/", true).await.unwrap();
+        // Verify entire tree is gone
+        assert!(fs.get_inode("/a/").await.is_err());
+        assert!(fs.get_inode("/a/b/").await.is_err());
+        assert!(fs.get_inode("/a/b/c/").await.is_err());
+        assert!(fs.get_inode("/a/b/c/file.txt").await.is_err());
+        assert!(fs.get_inode("/a/file1.txt").await.is_err());
+        let read = fs.read().await;
+        let inode = read.get(&id);
+        assert!(inode.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_returns_correct_blocks() {
+        let fs = FileSystem::default();
+
+        fs.create_directory("/a/").await.unwrap();
+        fs.create_directory("/a/b/").await.unwrap();
+        fs.create_directory("/a/b/c/").await.unwrap();
+        fs.create_file("/a/b/c/file.txt").await.unwrap();
+        fs.create_file("/a/file1.txt").await.unwrap();
+        let blocks = [BlockId(1), BlockId(2), BlockId(3)];
+        fs.allocate_blocks("/a/file1.txt", blocks).await.unwrap();
+        let blocks = [BlockId(4), BlockId(5), BlockId(6)];
+        fs.allocate_blocks("/a/b/c/file.txt", blocks).await.unwrap();
+
+        let id = fs.get_inode("/a/").await.unwrap().id;
+
+        let returned_blocks = fs.delete("/a/", true).await.unwrap();
+        // verify entire tree is gone
+        assert!(fs.get_inode("/a/").await.is_err());
+        assert!(fs.get_inode("/a/b/").await.is_err());
+        assert!(fs.get_inode("/a/b/c/").await.is_err());
+        assert!(fs.get_inode("/a/b/c/file.txt").await.is_err());
+        assert!(fs.get_inode("/a/file1.txt").await.is_err());
+
+        // verify all blocks are returned by delete so that they can be deallocated
+        let check = [
+            BlockId(1),
+            BlockId(2),
+            BlockId(3),
+            BlockId(4),
+            BlockId(5),
+            BlockId(6),
+        ];
+        assert!(check.iter().all(|b| returned_blocks.contains(b)));
+
+        // verify deleted `INode` is not in the namsepace
+        let read = fs.read().await;
+        let inode = read.get(&id);
+        assert!(inode.is_none());
     }
 }
